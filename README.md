@@ -1,41 +1,115 @@
 # TaskDock · 事项坞
 
-Windows 右上角常驻的未解决事项跟踪器。
+Windows 右上角常驻的未解决事项跟踪器。事情一直保留，直到你手动完成；不必提前安排每天的日程。
 
-不是按「今天几点做什么」排日程，而是把还没解决的事情一直挂着，直到完成。
+## 使用
 
-## 第一版功能
+运行 Windows 安装包，或者直接打开 `TaskDock.exe`（需要系统已安装 WebView2 Runtime）。
 
-- 右上角悬浮、始终置顶、无边框半透明窗口
-- 事项状态：待处理 / 处理中 / 等待他人 / 已完成
-- 开始时间、预计完成时间、实际完成时间
-- 自动显示已持续多久
-- 优先级、备注
-- 系统托盘（点击显示/隐藏）
-- 开机自启（菜单内开关）
-- 本地存储（本机 localStorage，无需账号）
+- **新增事项**：填写名称，按需设置优先级、实际开始时间、预计完成时间和备注。
+- **四种状态**：待处理、处理中、等待他人、已完成。可以直接在卡片上切换。
+- **时间记录**：未开始的事项显示创建时间；进入处理中或等待他人时自动记录首次开始时间；每次进入等待状态重新计时；完成时记录实际完成时间。
+- **详情**：点击事项卡片编辑。已完成事项也可编辑，不会改变完成状态或完成时间。状态记录保留完成、重开、等待等变化。
+- **搜索与历史**：搜索名称或备注；按状态筛选；完成历史每次加载 50 条，可继续加载。
+- **回收站**：删除操作改为移入回收站，随时恢复原状态，不自动清空。
+- **窗口**：拖动标题栏移动，拖动边缘调整大小。关闭窗口或正常退出时保存位置和大小；重新显示时将窗口限制在当前显示器工作区内。设置菜单可重新停靠右上角。
+- **边缘吸附**：Windows 下拖动标题栏，靠近屏幕工作区边缘约 24 个逻辑像素时自动吸附，角落可同时对齐两边；继续拉开约 36 个逻辑像素后解除，避免轻微移动时抖动。距离随屏幕缩放调整，避开任务栏；图钉固定时仍可吸附。仅在系统拖动消息到来时计算，不新增常驻定时器。
+- **靠边收起**：窗口距离任一屏幕工作区边缘约 28 像素以内时，鼠标移开约一秒后收起，只留下一个小箭头；鼠标移到箭头上便展开，无需点击。右上角同时靠近两边时优先收向右侧。移回屏幕中间后保持展开。
+- **图钉固定**：点击右上角图钉，高亮后靠边也不收起；再次点击恢复自动收起。固定状态在重启后保留。拖动、缩放、编辑事项、打开菜单或文件对话框时暂停自动收起。
+- **终端外观**：深色半透明面板、等宽字体和浅绿色提示，桌面或后方窗口可以透出来。设置中的“背景浓度”支持 45%–96%，默认 82%；数值越高，文字越不受背景干扰。外观偏好会在本机保留，菜单和编辑弹窗使用更深的背景以便操作。
+- **托盘**：左键显示/隐藏；右键菜单提供显示、隐藏、停靠和退出。关闭窗口或点击隐藏按钮会隐藏到托盘，此时边缘箭头也会消失；从托盘或再次运行程序可唤回。
+- **开机自启**：设置菜单中手动开启或关闭。推荐安装后开启，避免移动便携程序导致自启路径失效。
+- **超期显示**：预计时间过去后标色提示。此版本不发送系统通知。
 
-## 开发
+默认窗口为 360 × 560，最小支持 300 × 360。持续时长每分钟刷新一次，页面隐藏后暂停刷新。
+标题栏保留静态终端光标，不持续闪烁。
 
-需要：
+## 数据与备份
 
-- Node.js 18+
-- Rust（rustup）
-- Windows 上建议安装 [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（含 Desktop development with C++）
+桌面版使用本机 SQLite，无账号、服务器或联网同步。数据路径可以从设置菜单查看，Windows 默认是：
 
-```bash
-npm install
+```text
+%APPDATA%\com.taskdock.app\taskdock.sqlite3
+```
+
+保存使用 SQLite 事务与版本校验，保存失败时保留当前界面和原数据并提示错误。桌面版只允许一个实例运行，重复启动会显示已有窗口。
+
+- 每次内容变化前保留旧版本，最多保留 **20 个保存版本**，通过设置中的“恢复保存版本”查看。
+- **导出备份**生成 JSON，包含未解决、已完成、回收站和状态记录。可以另存到其他磁盘。桌面版先写入并刷新临时文件，再替换目标文件，写入或替换失败时保留原备份。
+- **导入备份**先校验整个文件，再显示数量。默认合并，只新增缺少的编号，不覆盖本地事项。需要回到某个版本时选“恢复”，勾选确认后替换，当前有效版本仍会保留为自动备份。
+- 自动保存版本位于同一个数据库中，不能替代异盘备份。数据库本身损坏时，退出程序，保留损坏数据库及其 `-wal`、`-shm` 文件，移到其他目录后重新启动，再导入外部 JSON 备份。
+- 旧版 `taskdock.tasks.v1` localStorage 数据首次启动时自动迁移；迁移成功后仍保留旧键。旧记录没有等待起点时显示“旧记录未记等待起点”，不推算或伪造等待时间。
+- 无效数据不会被静默丢弃或在启动时覆盖成空列表。单个导入文件上限 50 MB，事项总数上限 20000 条。
+
+`npm run dev` 是浏览器预览，使用独立的 localStorage 和一个上一版本备份。预览不提供托盘、自启或桌面定位，预览数据与安装版分开保存。
+
+## 开发与验证
+
+需要 Node.js **20.19+ 或 22.12+**（建议 Node.js 22）、Rust stable MSVC、Visual Studio C++ 构建工具，以及 WebView2 Runtime。
+
+```powershell
+npm ci
+npm test
+npm run build
+cargo test --manifest-path src-tauri/Cargo.toml
 npm run tauri:dev
 ```
 
-打包：
+本仓库还提供项目内安装 Rust 的可选脚本，不修改系统 PATH：
 
-```bash
-npm run tauri:build
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap-rust.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/with-rust.ps1 cargo test --manifest-path src-tauri/Cargo.toml
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/with-rust.ps1 npm.cmd run tauri:dev
 ```
 
-## 使用提示
+Node 测试覆盖旧数据迁移、损坏数据保护、保存失败、并发写入冲突、备份恢复、重复保存、等待计时、完成与重开、导入合并和时间校验。Rust 测试验证事务保存、数据库重开、不同连接的版本冲突、保存版本数量、导出失败保护和窗口边界。详见 [验证记录](docs/VALIDATION.md)。
 
-- 拖动顶部标题栏可移动窗口
-- 点 `−` 或关闭按钮会隐藏到托盘，不会退出
-- 托盘图标左键：显示/隐藏；右键：菜单
+## Windows 打包
+
+### 常驻资源
+
+界面没有持续动画。只有未完成事项需要每分钟刷新计时；空列表按跨日更新日期，窗口隐藏时暂停前端计时。图钉固定、编辑对话框打开和隐藏到托盘时，边缘检查线程等待事件；移到边缘才启用较快检查。收起后的悬停通过指针进入事件立即展开，并每秒检查一次显示器变化。
+
+贴边展开采用 260 ms 滑入，收起采用 190 ms 滑出，并短暂点亮绿色边线。动画仅修改位移和透明度，不逐帧移动系统窗口，也不重绘事项列表；结束后取消动画对象并清除 `will-change`。快速返回时从当前画面反向展开，旧动画的完成通知不会把新窗口隐藏。遵循系统的“减少动态效果”偏好，另有 900 ms 恢复期限，防止丢失完成通知时停在半途中。
+
+边缘箭头按首次实际需要创建，使用独立的小页面，不加载 React 和事项数据。首次创建可能使第一次收起稍慢；之后复用。WebView2 仍有基础内存开销，不能把主 EXE 的内存当作整套程序的占用。
+
+可以在程序启动并静置后运行以下只读脚本，统计 TaskDock 及其 WebView2 子进程（不包含其他应用的 WebView2）：
+
+```powershell
+.\scripts\measure-resources.ps1 -Seconds 15 -OutputPath artifacts/resource-sample.json
+```
+
+优先看 `PrivateWorkingSetMiB`（私有驻留内存）和 `MachineCpuPercent`（整机 CPU 百分比）；`PrivateCommitMiB` 是私有提交量，不等同于物理内存。短时静置测量不能代表长期峰值，实测记录见 `docs/VALIDATION.md`。
+
+### 构建命令
+
+```powershell
+npm run tauri:build
+# 使用项目内 Rust 时：
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/with-rust.ps1 npm.cmd run tauri:build
+```
+
+输出：
+
+```text
+src-tauri/target/release/taskdock.exe
+src-tauri/target/release/bundle/nsis/TaskDock_1.0.0_x64-setup.exe
+```
+
+NSIS 安装器使用当前用户安装模式，支持中文和英文。首次打包需要下载 Tauri 的安装器工具。项目未配置代码签名。
+
+GitHub Actions 在 Windows 上执行前端测试、构建、Rust 测试和安装器打包，将成品保存为构建产物；不会自动发布 Release。
+
+## 结构
+
+```text
+src/App.tsx              列表、搜索、备份恢复与桌面交互
+src/TaskEditor.tsx       编辑表单和详情
+src/tasks.ts            状态流转、数据校验、迁移、排序和合并
+src/storage.ts          SQLite IPC 与浏览器存储适配
+src-tauri/src/database.rs SQLite 事务、版本校验和保存版本
+src-tauri/src/lib.rs     窗口、托盘、自启、单实例和文件对话框
+tests/                  前端数据与时间测试
+```

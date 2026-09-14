@@ -28,9 +28,24 @@ export function formatDateTime(iso: string | null): string {
   const dd = String(d.getDate()).padStart(2, "0");
   const hh = String(d.getHours()).padStart(2, "0");
   const mi = String(d.getMinutes()).padStart(2, "0");
-  return `${mm}-${dd} ${hh}:${mi}`;
+  return `${d.getFullYear()}-${mm}-${dd} ${hh}:${mi}`;
 }
 
 export function nowIso(): string {
   return new Date().toISOString();
+}
+
+export function toLocalInputValue(iso: string | null): string {
+  if (!iso || !Number.isFinite(Date.parse(iso))) return "";
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+export function fromLocalInputValue(value: string): string | null {
+  if (!value || !Number.isFinite(Date.parse(value))) return null;
+  const date = new Date(value);
+  // Reject normalized invalid dates (e.g. Feb 30) and nonexistent DST local times.
+  if (toLocalInputValue(date.toISOString()) !== value) return null;
+  return date.toISOString();
 }

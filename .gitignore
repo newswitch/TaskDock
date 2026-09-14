@@ -8,3 +8,7 @@ src-tauri/target/
 src-tauri/gen/
 .vscode/*
 !.vscode/extensions.json
+.tools/
+.test-build/
+.npm-cache/
+artifacts/

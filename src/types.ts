@@ -12,7 +12,14 @@ export interface Task {
   startedAt: string | null;
   dueAt: string | null;
   completedAt: string | null;
+  updatedAt: string;
+  waitingSince: string | null;
+  deletedAt: string | null;
+  history: TaskEvent[];
 }
+
+export interface TaskEvent { at: string; from: TaskStatus; to: TaskStatus }
+export interface TaskDocument { version: 2; tasks: Task[] }
 
 export const STATUS_LABEL: Record<TaskStatus, string> = {
   todo: "待处理",

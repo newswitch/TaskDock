@@ -1,407 +1,263 @@
-import { useEffect, useState } from "react";
-import type { Task, TaskPriority, TaskStatus } from "./types";
-import { OPEN_STATUSES, PRIORITY_LABEL, STATUS_LABEL } from "./types";
-import { createId, loadTasks, saveTasks } from "./storage";
-import { formatDateTime, formatDuration, nowIso } from "./time";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { enable, isEnabled, disable } from "@tauri-apps/plugin-autostart";
+import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
+import type { Task, TaskStatus } from "./types";
+import { PRIORITY_LABEL, STATUS_LABEL } from "./types";
+import { getRepository, type Backup } from "./storage";
+import { changeStatus, mergeTasks, parseDocument, sortTasks } from "./tasks";
+import { formatDateTime, formatDuration, nowIso } from "./time";
+import TaskEditor from "./TaskEditor";
+import Dialog from "./Dialog";
+import { useEdgeHide } from "./useEdgeHide";
 import "./App.css";
 
-type Draft = {
-  title: string;
-  status: TaskStatus;
-  priority: TaskPriority;
-  note: string;
-  startedAt: string;
-  dueAt: string;
-};
-
-const emptyDraft = (): Draft => ({
-  title: "",
-  status: "todo",
-  priority: "medium",
-  note: "",
-  startedAt: "",
-  dueAt: "",
-});
-
-function toLocalInputValue(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-function fromLocalInputValue(value: string): string | null {
-  if (!value) return null;
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+type View = "open" | "done" | "trash";
+type ImportPreview = { tasks: Task[]; source: string };
+const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+const OPACITY_KEY = "taskdock.panel-opacity.v1";
+function readPanelOpacity(): number {
+  try {
+    const value = Number(localStorage.getItem(OPACITY_KEY));
+    if (Number.isInteger(value) && value >= 45 && value <= 96) return value;
+  } catch { /* Use the default when appearance preferences are unavailable. */ }
+  return 82;
 }
 
 export default function App() {
-  const [tasks, setTasks] = useState<Task[]>(() => loadTasks());
-  const [now, setNow] = useState(() => new Date());
-  const [showComposer, setShowComposer] = useState(false);
-  const [showDone, setShowDone] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [draft, setDraft] = useState<Draft>(emptyDraft);
-  const [autostartOn, setAutostartOn] = useState(false);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [ready, setReady] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const lock = useRef(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [view, setView] = useState<View>("open");
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [limit, setLimit] = useState(50);
+  const [now, setNow] = useState(new Date());
+  const [editor, setEditor] = useState<{ task: Task | null } | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [panelOpacity, setPanelOpacity] = useState(readPanelOpacity);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [autostart, setAutostart] = useState<boolean | null>(null);
+  const [backups, setBackups] = useState<Backup[] | null>(null);
+  const [preview, setPreview] = useState<ImportPreview | null>(null);
+  const [importMode, setImportMode] = useState<"merge" | "replace">("merge");
+  const [replaceConfirmed, setReplaceConfirmed] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const desktop = isTauri();
+  const hasRunningClock = tasks.some(task => !task.deletedAt && task.status !== "done");
+  const edgeHide = useEdgeHide(!ready || busy || menuOpen || !!editor || !!backups || !!preview || !!error, setError);
 
   useEffect(() => {
-    saveTasks(tasks);
-  }, [tasks]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 60_000);
-    return () => window.clearInterval(timer);
+    let cancelled = false;
+    getRepository().load().then(result => {
+      if (cancelled) return;
+      setTasks(result.tasks); setReady(true);
+      if (result.migrated) setMessage("已迁移旧版事项，原始数据仍保留");
+    }).catch(e => { if (!cancelled) setError(`读取失败：${errorText(e)}`); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
-    isEnabled()
-      .then(setAutostartOn)
-      .catch(() => setAutostartOn(false));
-  }, []);
-
-  const openTasks = tasks
-    .filter((t) => OPEN_STATUSES.includes(t.status))
-    .sort((a, b) => {
-      const rank = { high: 0, medium: 1, low: 2 } as const;
-      if (rank[a.priority] !== rank[b.priority]) {
-        return rank[a.priority] - rank[b.priority];
+    let timer: number | undefined;
+    function refresh() {
+      window.clearTimeout(timer);
+      if (!document.hidden) {
+        const current = new Date();
+        setNow(current);
+        const tomorrow = new Date(current.getFullYear(), current.getMonth(), current.getDate() + 1);
+        timer = window.setTimeout(refresh, hasRunningClock ? 60000 : tomorrow.getTime() - current.getTime() + 100);
       }
-      const aStart = a.startedAt ?? a.createdAt;
-      const bStart = b.startedAt ?? b.createdAt;
-      return aStart.localeCompare(bStart);
+    }
+    refresh(); document.addEventListener("visibilitychange", refresh);
+    return () => { window.clearTimeout(timer); document.removeEventListener("visibilitychange", refresh); };
+  }, [hasRunningClock]);
+
+  useEffect(() => {
+    if (desktop) isEnabled().then(setAutostart).catch(e => setError(`无法读取开机自启状态：${errorText(e)}`));
+  }, [desktop]);
+  useEffect(() => { setLimit(50); }, [view, query, filter]);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (event: PointerEvent) => { if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false); };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setMenuOpen(false); };
+    document.addEventListener("pointerdown", close); document.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("pointerdown", close); document.removeEventListener("keydown", escape); };
+  }, [menuOpen]);
+
+  async function perform(action: () => Promise<void>) {
+    if (lock.current) return;
+    lock.current = true; setBusy(true); setError(""); setMessage("");
+    try { await action(); } catch (e) { setError(errorText(e)); }
+    finally { lock.current = false; setBusy(false); }
+  }
+  async function commit(next: Task[], success = "已保存"): Promise<boolean> {
+    if (lock.current) return false;
+    let saved = false;
+    await perform(async () => {
+      await getRepository().save(next);
+      setTasks(next); setReady(true); setNow(new Date()); setMessage(success); saved = true;
     });
-
-  const doneTasks = tasks
-    .filter((t) => t.status === "done")
-    .sort((a, b) => (b.completedAt ?? "").localeCompare(a.completedAt ?? ""));
-
-  async function startDrag() {
-    try {
-      await getCurrentWindow().startDragging();
-    } catch {
-      // ignore in browser preview
-    }
+    return saved;
   }
-
-  async function hideWindow() {
-    try {
-      await getCurrentWindow().hide();
-    } catch {
-      // ignore
-    }
+  async function reload() {
+    await perform(async () => {
+      const result = await getRepository().load(); setTasks(result.tasks); setReady(true); setMessage("已重新加载");
+    });
   }
-
-  async function toggleAutostart() {
-    try {
-      if (autostartOn) {
-        await disable();
-        setAutostartOn(false);
-      } else {
-        await enable();
-        setAutostartOn(true);
+  async function setStatus(task: Task, status: TaskStatus) {
+    await commit(tasks.map(t => t.id === task.id ? changeStatus(t, status, nowIso()) : t));
+  }
+  async function trash(task: Task) {
+    if (await commit(tasks.map(t => t.id === task.id ? { ...t, deletedAt: nowIso(), updatedAt: nowIso() } : t), "已移入回收站，可随时恢复")) setEditor(null);
+  }
+  function edit(task: Task | null) { setError(""); setMenuOpen(false); setEditor({ task }); }
+  async function windowAction(action: "hide" | "dock") {
+    await perform(async () => {
+      if (action === "hide") await invoke("hide_to_tray"); else await invoke("dock_window");
+      setMenuOpen(false);
+    });
+  }
+  function inspectImport(raw: string, source: string) {
+    const document = parseDocument(raw.replace(/^\uFEFF/, ""));
+    setPreview({ tasks: document.tasks, source }); setBackups(null); setMenuOpen(false);
+    setImportMode(ready ? "merge" : "replace"); setReplaceConfirmed(false); setError("");
+  }
+  async function chooseImport() {
+    setMenuOpen(false);
+    if (!desktop) { fileInput.current?.click(); return; }
+    await perform(async () => { const raw = await invoke<string | null>("import_file"); if (raw !== null) inspectImport(raw, "所选备份文件"); });
+  }
+  async function exportBackup() {
+    await perform(async () => {
+      const payload = JSON.stringify({ version: 2, tasks }, null, 2);
+      if (desktop) { if (await invoke<boolean>("export_file", { payload })) setMessage("备份已导出"); }
+      else {
+        const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
+        const link = document.createElement("a"); link.href = url; link.download = `TaskDock-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.append(link); link.click(); link.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+        setMessage("已生成备份下载");
       }
-    } catch {
-      // ignore when not in Tauri
-    }
-  }
-
-  function openCreate() {
-    setEditingId(null);
-    setDraft(emptyDraft());
-    setShowComposer(true);
-  }
-
-  function openEdit(task: Task) {
-    setEditingId(task.id);
-    setDraft({
-      title: task.title,
-      status: task.status === "done" ? "todo" : task.status,
-      priority: task.priority,
-      note: task.note,
-      startedAt: toLocalInputValue(task.startedAt),
-      dueAt: toLocalInputValue(task.dueAt),
+      setMenuOpen(false);
     });
-    setShowComposer(true);
+  }
+  async function showBackups() {
+    await perform(async () => { setBackups(await getRepository().backend.backups()); setMenuOpen(false); });
+  }
+  async function importTasks() {
+    if (!preview || (importMode === "replace" && !replaceConfirmed)) return;
+    try {
+      const next = importMode === "merge" ? mergeTasks(tasks, preview.tasks) : preview.tasks;
+      if (await commit(next, importMode === "merge" ? "已合并备份，现有事项保持原样" : "已恢复所选备份")) setPreview(null);
+    } catch (e) { setError(errorText(e)); }
   }
 
-  function submitDraft() {
-    const title = draft.title.trim();
-    if (!title) return;
+  const active = tasks.filter(t => !t.deletedAt);
+  const openCount = active.filter(t => t.status !== "done").length;
+  const doneCount = active.length - openCount;
+  const trashCount = tasks.length - active.length;
+  const searched = tasks.filter(task => {
+    if (view === "trash" ? !task.deletedAt : task.deletedAt || (view === "done" ? task.status !== "done" : task.status === "done")) return false;
+    if (view === "open" && filter !== "all" && task.status !== filter) return false;
+    return `${task.title}\n${task.note}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
+  });
+  const visibleTasks = sortTasks(searched, view !== "open");
 
-    const startedAt = fromLocalInputValue(draft.startedAt);
-    const dueAt = fromLocalInputValue(draft.dueAt);
-
-    if (editingId) {
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.id === editingId
-            ? {
-                ...t,
-                title,
-                status: draft.status,
-                priority: draft.priority,
-                note: draft.note.trim(),
-                startedAt:
-                  draft.status === "todo"
-                    ? startedAt
-                    : startedAt ?? t.startedAt ?? nowIso(),
-                dueAt,
-                completedAt: null,
-              }
-            : t,
-        ),
-      );
-    } else {
-      const createdAt = nowIso();
-      const task: Task = {
-        id: createId(),
-        title,
-        status: draft.status,
-        priority: draft.priority,
-        note: draft.note.trim(),
-        createdAt,
-        startedAt:
-          draft.status === "todo" ? startedAt : startedAt ?? createdAt,
-        dueAt,
-        completedAt: null,
-      };
-      setTasks((prev) => [task, ...prev]);
-    }
-
-    setShowComposer(false);
-    setDraft(emptyDraft());
-    setEditingId(null);
-  }
-
-  function setStatus(id: string, status: TaskStatus) {
-    setTasks((prev) =>
-      prev.map((t) => {
-        if (t.id !== id) return t;
-        if (status === "done") {
-          return { ...t, status, completedAt: nowIso() };
-        }
-        return {
-          ...t,
-          status,
-          completedAt: null,
-          startedAt:
-            status === "todo"
-              ? t.startedAt
-              : t.startedAt ?? nowIso(),
-        };
-      }),
-    );
-  }
-
-  function removeTask(id: string) {
-    setTasks((prev) => prev.filter((t) => t.id !== id));
-  }
-
-  function durationAnchor(task: Task): string {
-    return task.startedAt ?? task.createdAt;
-  }
-
-  return (
-    <div className="shell">
-      <header className="titlebar" onMouseDown={startDrag}>
-        <div className="brand">
-          <span className="brand-mark" />
-          <div>
-            <div className="brand-name">TaskDock</div>
-            <div className="brand-sub">未解决事项 · {openTasks.length}</div>
-          </div>
-        </div>
-        <div className="title-actions" onMouseDown={(e) => e.stopPropagation()}>
-          <button className="icon-btn" title="设置" onClick={() => setMenuOpen((v) => !v)}>
-            ⋯
-          </button>
-          <button className="icon-btn" title="隐藏到托盘" onClick={hideWindow}>
-            −
-          </button>
-        </div>
-        {menuOpen && (
-          <div className="menu" onMouseDown={(e) => e.stopPropagation()}>
-            <button onClick={() => { setShowDone((v) => !v); setMenuOpen(false); }}>
-              {showDone ? "隐藏已完成" : "查看已完成"}
-            </button>
-            <button onClick={() => { void toggleAutostart(); }}>
-              开机自启：{autostartOn ? "开" : "关"}
-            </button>
-            <button onClick={() => setMenuOpen(false)}>关闭菜单</button>
-          </div>
-        )}
-      </header>
-
-      <main className="content">
-        {openTasks.length === 0 ? (
-          <div className="empty">
-            <p>暂时没有未解决事项</p>
-            <p className="muted">记下一件一直挂着的事，避免忙起来忘掉</p>
-          </div>
-        ) : (
-          <ul className="task-list">
-            {openTasks.map((task) => (
-              <li key={task.id} className={`task status-${task.status} priority-${task.priority}`}>
-                <button className="task-main" onClick={() => openEdit(task)}>
-                  <div className="task-title-row">
-                    <span className={`dot status-${task.status}`} />
-                    <span className="task-title">{task.title}</span>
-                  </div>
-                  <div className="task-meta">
-                    <span>{STATUS_LABEL[task.status]}</span>
-                    <span>·</span>
-                    <span>已持续 {formatDuration(durationAnchor(task), now)}</span>
-                  </div>
-                  <div className="task-times">
-                    <span>开始 {formatDateTime(task.startedAt ?? task.createdAt)}</span>
-                    {task.dueAt && <span>预计 {formatDateTime(task.dueAt)}</span>}
-                    {task.priority !== "medium" && (
-                      <span>优先级 {PRIORITY_LABEL[task.priority]}</span>
-                    )}
-                  </div>
-                  {task.note && <p className="task-note">{task.note}</p>}
-                </button>
-                <div className="task-actions">
-                  {task.status !== "todo" && (
-                    <button onClick={() => setStatus(task.id, "todo")}>待处理</button>
-                  )}
-                  {task.status !== "doing" && (
-                    <button onClick={() => setStatus(task.id, "doing")}>处理中</button>
-                  )}
-                  {task.status !== "waiting" && (
-                    <button onClick={() => setStatus(task.id, "waiting")}>等待</button>
-                  )}
-                  <button className="done-btn" onClick={() => setStatus(task.id, "done")}>
-                    完成
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {showDone && doneTasks.length > 0 && (
-          <section className="done-section">
-            <h2>已完成</h2>
-            <ul className="task-list done">
-              {doneTasks.slice(0, 20).map((task) => (
-                <li key={task.id} className="task status-done">
-                  <div className="task-main static">
-                    <div className="task-title-row">
-                      <span className="dot status-done" />
-                      <span className="task-title">{task.title}</span>
-                    </div>
-                    <div className="task-meta">
-                      <span>完成于 {formatDateTime(task.completedAt)}</span>
-                    </div>
-                  </div>
-                  <div className="task-actions">
-                    <button onClick={() => setStatus(task.id, "todo")}>重开</button>
-                    <button className="danger" onClick={() => removeTask(task.id)}>
-                      删除
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-      </main>
-
-      <footer className="footer">
-        <button className="add-btn" onClick={openCreate}>
-          ＋ 新增事项
-        </button>
-      </footer>
-
-      {showComposer && (
-        <div className="overlay">
-          <div className="composer">
-            <h2>{editingId ? "编辑事项" : "新增事项"}</h2>
-            <label>
-              事项名称
-              <input
-                autoFocus
-                value={draft.title}
-                onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
-                placeholder="例如：GPU 监控接入"
-              />
-            </label>
-            <div className="row-2">
-              <label>
-                状态
-                <select
-                  value={draft.status}
-                  onChange={(e) =>
-                    setDraft((d) => ({ ...d, status: e.target.value as TaskStatus }))
-                  }
-                >
-                  <option value="todo">待处理</option>
-                  <option value="doing">处理中</option>
-                  <option value="waiting">等待他人</option>
-                </select>
-              </label>
-              <label>
-                优先级
-                <select
-                  value={draft.priority}
-                  onChange={(e) =>
-                    setDraft((d) => ({ ...d, priority: e.target.value as TaskPriority }))
-                  }
-                >
-                  <option value="high">高</option>
-                  <option value="medium">中</option>
-                  <option value="low">低</option>
-                </select>
-              </label>
+  return <div className="shell" style={{ "--panel-opacity": panelOpacity / 100 } as CSSProperties}
+    onFocusCapture={edgeHide.onFocusCapture} onBlurCapture={edgeHide.onBlurCapture}>
+    <header className="titlebar" onMouseDown={e => { if (desktop && e.button === 0) void getCurrentWindow().startDragging().catch(err => setError(errorText(err))); }}>
+      <div className="brand"><span className="brand-mark" aria-hidden="true">&gt;_</span><div><div className="brand-name">taskdock<span className="brand-cursor" aria-hidden="true" /></div><div className="brand-sub">未解决事项 · {openCount}</div></div></div>
+      <div className="title-actions" onMouseDown={e => e.stopPropagation()}>
+        {desktop && <button className="icon-btn pin-btn" aria-label="固定窗口" aria-pressed={edgeHide.pinned}
+          title={edgeHide.pinned ? "已固定：靠边保持展开，点击取消固定" : "靠边自动收起，点击固定窗口"}
+          disabled={!edgeHide.pinReady || edgeHide.pinBusy} onClick={() => void edgeHide.togglePin()}>
+          <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M8 3h8l-1 7 3 3v2H6v-2l3-3-1-7Z" /><path d="M12 15v6" /></svg>
+        </button>}
+        <div ref={menuRef}>
+          <button className="icon-btn" aria-label="设置" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}>⋯</button>
+          {menuOpen && <div className="menu">
+            <div className="appearance-setting">
+              <label htmlFor="panel-opacity">背景浓度 <output htmlFor="panel-opacity">{panelOpacity}%</output></label>
+              <input id="panel-opacity" type="range" min="45" max="96" step="1" value={panelOpacity} aria-valuetext={`${panelOpacity}%`} onChange={event => {
+                const value = Number(event.target.value); setPanelOpacity(value);
+                try { localStorage.setItem(OPACITY_KEY, String(value)); }
+                catch { setError("外观已调整，但设置暂时无法保存，重启后会恢复默认。"); }
+              }} />
+              <p>调淡可透出背景，调深让文字更清晰</p>
             </div>
-            <div className="row-2">
-              <label>
-                开始时间
-                <input
-                  type="datetime-local"
-                  value={draft.startedAt}
-                  onChange={(e) => setDraft((d) => ({ ...d, startedAt: e.target.value }))}
-                />
-              </label>
-              <label>
-                预计完成
-                <input
-                  type="datetime-local"
-                  value={draft.dueAt}
-                  onChange={(e) => setDraft((d) => ({ ...d, dueAt: e.target.value }))}
-                />
-              </label>
-            </div>
-            <label>
-              备注
-              <textarea
-                rows={3}
-                value={draft.note}
-                onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))}
-                placeholder="例如：等网络策略开通"
-              />
-            </label>
-            <div className="composer-actions">
-              {editingId && (
-                <button className="danger" onClick={() => { removeTask(editingId); setShowComposer(false); }}>
-                  删除
-                </button>
-              )}
-              <div className="spacer" />
-              <button onClick={() => setShowComposer(false)}>取消</button>
-              <button className="primary" onClick={submitDraft}>
-                保存
-              </button>
-            </div>
-          </div>
+            {desktop && <><button disabled={busy} onClick={() => void windowAction("dock")}>停靠右上角</button>
+              <button disabled={busy} onClick={() => void perform(async () => {
+                const current = await isEnabled(); if (current) await disable(); else await enable();
+                setAutostart(await isEnabled()); setMessage(current ? "已关闭开机自启" : "已开启开机自启");
+              })}>开机自启：{autostart === null ? "重试读取" : autostart ? "开" : "关"}</button></>}
+            <button disabled={busy || !ready} onClick={() => void exportBackup()}>导出备份</button>
+            <button disabled={busy} onClick={() => void chooseImport()}>导入备份</button>
+            <button disabled={busy} onClick={() => void showBackups()}>恢复保存版本</button>
+            <button disabled={busy} onClick={() => void reload()}>重新加载数据</button>
+            {desktop && <button disabled={busy} onClick={() => void perform(async () => { setMessage(`数据文件：${await invoke<string>("data_path")}`); setMenuOpen(false); })}>查看数据位置</button>}
+            <span className="menu-version">TaskDock 1.0 · {desktop ? "本机保存" : "浏览器预览"}</span>
+          </div>}
         </div>
-      )}
+        {desktop && <button className="icon-btn" aria-label="隐藏到托盘" disabled={busy} onClick={() => void windowAction("hide")}>−</button>}
+      </div>
+    </header>
+    <div className="tabs" role="tablist" aria-label="事项视图">
+      {([["open", "未解决", openCount], ["done", "已完成", doneCount], ["trash", "回收站", trashCount]] as const).map(([key, label, count]) =>
+        <button role="tab" aria-selected={view === key} key={key} onClick={() => setView(key)}>{label} <span>{count}</span></button>)}
     </div>
-  );
+    <div className="filters"><input type="search" aria-label="搜索事项" placeholder="搜索名称或备注" value={query} onChange={e => setQuery(e.target.value)} />
+      {view === "open" && <select aria-label="筛选状态" value={filter} onChange={e => setFilter(e.target.value)}><option value="all">全部状态</option><option value="todo">待处理</option><option value="doing">处理中</option><option value="waiting">等待他人</option></select>}
+    </div>
+    {error && <div className="notice error" role="alert">{error}<button aria-label="关闭错误提示" onClick={() => setError("")}>×</button></div>}
+    {message && <div className="notice" role="status">{message}<button aria-label="关闭提示" onClick={() => setMessage("")}>×</button></div>}
+    <main className="content" aria-busy={loading || busy}>
+      {loading ? <div className="empty">正在读取事项…</div> : !ready ? <div className="empty"><p>暂时无法读取事项</p><p className="muted">原始数据已保留，请重试或选择备份恢复。</p><button disabled={busy} className="text-btn" onClick={() => void reload()}>重试读取</button><button disabled={busy} className="text-btn" onClick={() => void showBackups()}>查看保存版本</button><button disabled={busy} className="text-btn" onClick={() => void chooseImport()}>导入备份</button></div> : visibleTasks.length === 0 ?
+        <div className="empty"><div className="empty-prompt" aria-hidden="true">{view === "done" ? "[✓]" : view === "trash" ? "[ ]" : ">_"}</div><p>{query || filter !== "all" && view === "open" ? "没有匹配的事项" : view === "open" ? "暂时没有未解决事项" : view === "done" ? "还没有已完成事项" : "回收站是空的"}</p><p className="muted">{view === "open" ? "记下来，忙起来也不会忘。" : view === "trash" ? "移入回收站的事项可以随时恢复。" : "完成的事项会保留时间和状态记录。"}</p></div> :
+        <ul className="task-list">{visibleTasks.slice(0, limit).map(task => {
+          const overdue = !task.deletedAt && task.status !== "done" && task.dueAt && Date.parse(task.dueAt) < now.getTime();
+          return <li key={task.id} className={`task status-${task.status} priority-${task.priority}`}>
+            <button className="task-main" disabled={view === "trash" || busy} onClick={() => edit(task)}>
+              <div className="task-title-row"><span className={`dot status-${task.status}`} /><span className="task-title">{task.title}</span><span className="priority-label">{PRIORITY_LABEL[task.priority]}</span></div>
+              <div className="task-meta"><span className={`status-label status-${task.status}`}>{STATUS_LABEL[task.status]}</span><span>·</span><span>{task.status === "done" ? `历时 ${formatDuration(task.startedAt ?? task.createdAt, new Date(task.completedAt!))}` : task.status === "waiting" ? task.waitingSince ? `本次已等待 ${formatDuration(task.waitingSince, now)}` : "旧记录未记等待起点" : task.startedAt ? `已开始 ${formatDuration(task.startedAt, now)}` : `已创建 ${formatDuration(task.createdAt, now)}`}</span></div>
+              <div className="task-times"><span>{task.startedAt ? `开始 ${formatDateTime(task.startedAt)}` : `创建 ${formatDateTime(task.createdAt)} · 未开始`}</span>
+                {task.dueAt && <span className={overdue ? "overdue" : ""}>{overdue ? "已超期 · 预计" : "预计"} {formatDateTime(task.dueAt)}</span>}
+                {task.completedAt && <span>完成 {formatDateTime(task.completedAt)}</span>}
+                {task.deletedAt && <span>移入回收站 {formatDateTime(task.deletedAt)}</span>}
+              </div>
+              {task.note && <p className="task-note">{task.note}</p>}
+            </button>
+            <div className="task-actions">
+              {view === "trash" ? <button disabled={busy} onClick={() => void commit(tasks.map(t => t.id === task.id ? { ...t, deletedAt: null, updatedAt: nowIso() } : t), "事项已恢复")}>恢复事项</button> : task.status === "done" ? <><button disabled={busy} onClick={() => void setStatus(task, "todo")}>重新打开</button><button disabled={busy} onClick={() => void trash(task)}>移入回收站</button></> : <>
+                {(["todo", "doing", "waiting"] as const).filter(status => task.status !== status).map(status => <button key={status} disabled={busy} onClick={() => void setStatus(task, status)}>{STATUS_LABEL[status]}</button>)}
+                <button className="done-btn" disabled={busy} onClick={() => void setStatus(task, "done")}>完成</button></>}
+            </div>
+          </li>;
+        })}</ul>}
+      {visibleTasks.length > limit && <button className="load-more" onClick={() => setLimit(limit + 50)}>加载更多（还有 {visibleTasks.length - limit} 条）</button>}
+    </main>
+    <footer className="footer"><button className="add-btn" disabled={!ready || busy} onClick={() => edit(null)}><span aria-hidden="true">&gt;</span> 新增事项<span className="add-symbol" aria-hidden="true">＋</span></button><div className="footer-status"><span className={ready ? "storage-ready" : ""}><span aria-hidden="true">●</span> {loading ? "正在读取" : !ready ? "等待恢复" : desktop ? "本机保存" : "浏览器预览"}</span><span>把事情留在视线里</span></div></footer>
+    {desktop && (["North", "South", "East", "West", "NorthEast", "NorthWest", "SouthEast", "SouthWest"] as const).map(direction => <div aria-hidden="true" key={direction} className={`resize-handle resize-${direction}`} onPointerDown={event => { if (event.button === 0) void getCurrentWindow().startResizeDragging(direction).catch(e => setError(errorText(e))); }} />)}
+    <input ref={fileInput} type="file" accept=".json,application/json" hidden onChange={event => {
+      const file = event.target.files?.[0]; event.target.value = "";
+      if (file) void perform(async () => { if (file.size > 50 * 1024 * 1024) throw new Error("文件不能超过 50 MB"); inspectImport(await file.text(), file.name); });
+    }} />
+    {editor && <TaskEditor task={editor.task} busy={busy} error={error} onClose={() => setEditor(null)} onDelete={trash} onSave={task => commit(editor.task ? tasks.map(t => t.id === task.id ? task : t) : [task, ...tasks])} />}
+    {backups && <Dialog title="恢复保存版本" busy={busy} onClose={() => setBackups(null)}><div className="panel-body">
+      <p className="muted">{desktop ? "保留最近 20 个保存前的版本。" : "浏览器预览保留上一次保存。"}选择后可先查看数量，再决定恢复。</p>
+      {error && <p className="error" role="alert">{error}</p>}
+      {backups.length ? <ul className="backup-list">{backups.map(backup => <li key={backup.id}><button disabled={busy} onClick={() => void perform(async () => inspectImport(await getRepository().backend.readBackup(backup.id), `保存版本 #${backup.id}`))}>{backup.createdAt.includes("T") ? formatDateTime(backup.createdAt) : backup.createdAt}<span>查看 →</span></button></li>)}</ul> : <p>暂无保存版本。修改事项后会自动保留旧版本。</p>}
+    </div></Dialog>}
+    {preview && <Dialog title="导入备份" busy={busy} onClose={() => setPreview(null)}><div className="panel-body">
+      <p className="import-source">{preview.source}</p><p>包含 {preview.tasks.filter(t => !t.deletedAt && t.status !== "done").length} 条未解决、{preview.tasks.filter(t => !t.deletedAt && t.status === "done").length} 条已完成、{preview.tasks.filter(t => t.deletedAt).length} 条回收站事项。</p>
+      <label className="radio-option"><input type="radio" name="importMode" checked={importMode === "merge"} disabled={!ready || busy} onChange={() => setImportMode("merge")} /><span>合并：只新增缺少的事项，保留当前修改</span></label>
+      <label className="radio-option"><input type="radio" name="importMode" checked={importMode === "replace"} disabled={busy} onChange={() => setImportMode("replace")} /><span>恢复：用这个版本替换当前全部事项</span></label>
+      {importMode === "replace" && <label className="radio-option"><input type="checkbox" checked={replaceConfirmed} disabled={busy} onChange={e => setReplaceConfirmed(e.target.checked)} /><span>确认替换当前数据；当前有效版本会保留为自动备份。</span></label>}
+      {error && <p className="error" role="alert">{error}</p>}
+      <div className="composer-actions"><span className="spacer" /><button disabled={busy} onClick={() => setPreview(null)}>取消</button><button className="primary" disabled={busy || importMode === "replace" && !replaceConfirmed} onClick={() => void importTasks()}>{busy ? "导入中…" : "确认导入"}</button></div>
+    </div></Dialog>}
+  </div>;
 }

@@ -1,0 +1,12 @@
+:root { color-scheme: dark; }
+html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
+.edge-peek { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; box-sizing: border-box; padding: 0; cursor: pointer; color: #a6e6c3; background: rgba(16, 28, 22, .96); border: 1px solid #93dbb480; }
+.edge-peek:hover, .edge-peek:focus-visible { color: #e5fff0; background: #264235; outline: none; }
+.edge-peek svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.side-right { border-right: 0; border-radius: 8px 0 0 8px; }
+.side-left { border-left: 0; border-radius: 0 8px 8px 0; }
+.side-top { border-top: 0; border-radius: 0 0 8px 8px; }
+.side-bottom { border-bottom: 0; border-radius: 8px 8px 0 0; }
+.side-left svg { transform: rotate(180deg); }
+.side-top svg { transform: rotate(-90deg); }
+.side-bottom svg { transform: rotate(90deg); }

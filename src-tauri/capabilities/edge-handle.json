@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "edge-handle",
+  "description": "Local edge arrow event subscription",
+  "windows": ["edge-handle"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}
