@@ -1,4 +1,4 @@
-import type { Task, TaskDocument, TaskPriority, TaskStatus, TaskEvent } from "./types.js";
+import type { Task, TaskDocument, TaskPriority, TaskStatus, TaskEvent, TaskGoal, ProgressEntry } from "./types.js";
 
 export const MAX_TASKS = 20_000;
 const statuses = ["todo", "doing", "waiting", "done"];
@@ -20,7 +20,7 @@ export function parseDocument(raw: string): TaskDocument {
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { throw new Error("文件不是有效的 JSON，原数据已保留"); }
   const legacy = Array.isArray(parsed);
-  if (!legacy && (!record(parsed) || parsed.version !== 2)) throw new Error("不支持的数据版本");
+  if (!legacy && (!record(parsed) || ![2, 3].includes(parsed.version as number))) throw new Error("不支持的数据版本");
   const items: unknown = legacy ? parsed : (parsed as Record<string, unknown>).tasks;
   if (!Array.isArray(items) || items.length > MAX_TASKS) throw new Error("事项列表无效或超过 20000 条");
   const ids = new Set<string>();
@@ -43,17 +43,42 @@ export function parseDocument(raw: string): TaskDocument {
           history.push({ at: date(event.at)!, from: event.from as TaskStatus, to: event.to as TaskStatus });
         }
       }
+      let goal: TaskGoal | null = null;
+      if (value.goal !== undefined && value.goal !== null) {
+        const g = value.goal;
+        if (!record(g) || typeof g.title !== "string" || !g.title.trim() || g.title.length > 200
+          || typeof g.unit !== "string" || !g.unit.trim() || g.unit.length > 10
+          || !Number.isSafeInteger(g.target) || (g.target as number) < 1 || (g.target as number) > 1_000_000
+          || !Number.isSafeInteger(g.current) || (g.current as number) < 0 || (g.current as number) > 1_000_000) throw new Error("目标名称、单位或数量无效");
+        goal = { title: g.title.trim(), unit: g.unit.trim(), target: g.target as number, current: g.current as number };
+      }
+      const progress: ProgressEntry[] = [];
+      if (value.progress !== undefined) {
+        if (!Array.isArray(value.progress) || value.progress.length > 10_000) throw new Error("进展记录无效或超过 10000 条");
+        const progressIds = new Set<string>();
+        for (const entry of value.progress) {
+          if (!record(entry) || typeof entry.id !== "string" || !entry.id || entry.id.length > 200 || progressIds.has(entry.id)
+            || typeof entry.text !== "string" || !entry.text.trim() || entry.text.length > 2000) throw new Error("进展记录内容无效或编号重复");
+          progressIds.add(entry.id);
+          progress.push({ id: entry.id, at: date(entry.at)!, text: entry.text.trim() });
+        }
+        progress.sort((a, b) => a.at.localeCompare(b.at));
+      }
       return {
         id: value.id, title: value.title.trim(), status, priority: value.priority as TaskPriority,
         note: value.note, createdAt, startedAt: date(value.startedAt, true), dueAt: date(value.dueAt, true),
         completedAt: status === "done" ? completedAt : null,
         updatedAt: date(value.updatedAt ?? completedAt ?? createdAt)!,
         waitingSince: status === "waiting" ? date(value.waitingSince, true) : null,
-        deletedAt: date(value.deletedAt, true), history,
+        deletedAt: date(value.deletedAt, true), history, goal, progress,
       };
     } catch (error) { throw new Error(`第 ${index + 1} 条事项：${(error as Error).message}`); }
   });
-  return { version: 2, tasks };
+  return { version: 3, tasks };
+}
+
+export function taskSummary(task: Task): string {
+  return task.progress[task.progress.length - 1]?.text ?? task.note;
 }
 
 export function changeStatus(task: Task, status: TaskStatus, at: string): Task {

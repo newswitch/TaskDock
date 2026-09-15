@@ -47,7 +47,7 @@ pub fn validate_payload(payload: &str) -> Result<(), String> {
         return Err("备份文件不能超过 50 MB".into());
     }
     let value: serde_json::Value = serde_json::from_str(payload).map_err(|e| e.to_string())?;
-    if value.get("version").and_then(|v| v.as_u64()) != Some(2) {
+    if !matches!(value.get("version").and_then(|v| v.as_u64()), Some(2 | 3)) {
         return Err("不支持的数据版本".into());
     }
     let tasks = value
@@ -207,6 +207,27 @@ mod tests {
         write(&mut c, &document("safe"), 0).unwrap();
         assert!(write(&mut c, "broken", 1).is_err());
         assert_eq!(read(&c).unwrap().revision, 1);
+    }
+    #[test]
+    fn progress_document_survives_reopen_and_keeps_legacy_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("taskdock.sqlite3");
+        let legacy = document("recruitment");
+        let current = serde_json::json!({"version":3,"tasks":[{
+            "id":"a","title":"recruitment",
+            "goal":{"title":"Find suitable candidates","current":1,"target":2,"unit":"people"},
+            "progress":[{"id":"entry","at":"2026-09-15T00:00:00.000Z","text":"Three resumes received"}]
+        }]}).to_string();
+        {
+            let mut c = open(&path).unwrap();
+            write(&mut c, &legacy, 0).unwrap();
+            write(&mut c, &current, 1).unwrap();
+            assert!(write(&mut c, &current.replace("\"version\":3", "\"version\":4"), 2).is_err());
+        }
+        let c = open(&path).unwrap();
+        assert_eq!(read(&c).unwrap().payload.unwrap(), current);
+        let backup: String = c.query_row("SELECT payload FROM backups", [], |row| row.get(0)).unwrap();
+        assert_eq!(backup, legacy);
     }
     #[test]
     fn keeps_twenty_backups_and_no_backup_for_identical_save() {

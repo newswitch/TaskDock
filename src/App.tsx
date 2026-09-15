@@ -5,7 +5,7 @@ import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import type { Task, TaskStatus } from "./types";
 import { PRIORITY_LABEL, STATUS_LABEL } from "./types";
 import { getRepository, type Backup } from "./storage";
-import { changeStatus, mergeTasks, parseDocument, sortTasks } from "./tasks";
+import { changeStatus, mergeTasks, parseDocument, sortTasks, taskSummary } from "./tasks";
 import { formatDateTime, formatDuration, nowIso } from "./time";
 import TaskEditor from "./TaskEditor";
 import Dialog from "./Dialog";
@@ -147,7 +147,7 @@ export default function App() {
   }
   async function exportBackup() {
     await perform(async () => {
-      const payload = JSON.stringify({ version: 2, tasks }, null, 2);
+      const payload = JSON.stringify({ version: 3, tasks }, null, 2);
       if (desktop) { if (await invoke<boolean>("export_file", { payload })) setMessage("备份已导出"); }
       else {
         const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
@@ -176,7 +176,7 @@ export default function App() {
   const searched = tasks.filter(task => {
     if (view === "trash" ? !task.deletedAt : task.deletedAt || (view === "done" ? task.status !== "done" : task.status === "done")) return false;
     if (view === "open" && filter !== "all" && task.status !== filter) return false;
-    return `${task.title}\n${task.note}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
+    return `${task.title}\n${task.note}\n${task.goal?.title ?? ""}\n${task.progress.map(entry => entry.text).join("\n")}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
   });
   const visibleTasks = sortTasks(searched, view !== "open");
 
@@ -235,10 +235,11 @@ export default function App() {
         <div className="empty"><div className="empty-prompt" aria-hidden="true">{view === "done" ? "[✓]" : view === "trash" ? "[ ]" : ">_"}</div><p>{query || filter !== "all" && view === "open" ? "没有匹配的事项" : view === "open" ? "暂时没有未解决事项" : view === "done" ? "还没有已完成事项" : "回收站是空的"}</p><p className="muted">{view === "open" ? "记下来，忙起来也不会忘。" : view === "trash" ? "移入回收站的事项可以随时恢复。" : "完成的事项会保留时间和状态记录。"}</p></div> :
         <ul className="task-list">{visibleTasks.slice(0, limit).map(task => {
           const overdue = !task.deletedAt && task.status !== "done" && task.dueAt && Date.parse(task.dueAt) < now.getTime();
+          const summary = taskSummary(task);
           return <li key={task.id} className={`task status-${task.status} priority-${task.priority}`}>
             <button className="task-main" disabled={view === "trash" || busy} onClick={() => edit(task)}>
               <div className="task-title-row"><span className="task-title" title={task.title}>{task.title}</span>{task.priority === "high" && <span className="priority-label">{PRIORITY_LABEL[task.priority]}</span>}</div>
-              <div className="task-meta"><span className={`status-label status-${task.status}`}>{STATUS_LABEL[task.status]}</span><span className="task-duration">{task.status === "done" ? `历时 ${formatDuration(task.startedAt ?? task.createdAt, new Date(task.completedAt!))}` : task.status === "waiting" ? task.waitingSince ? `本次已等待 ${formatDuration(task.waitingSince, now)}` : "旧记录未记等待起点" : task.startedAt ? `已开始 ${formatDuration(task.startedAt, now)}` : `已创建 ${formatDuration(task.createdAt, now)}`}</span>{task.note && <span className="task-note" title={task.note}>{task.note}</span>}</div>
+              <div className="task-meta"><span className={`status-label status-${task.status}`}>{STATUS_LABEL[task.status]}</span><span className="task-duration">{task.status === "done" ? `历时 ${formatDuration(task.startedAt ?? task.createdAt, new Date(task.completedAt!))}` : task.status === "waiting" ? task.waitingSince ? `本次已等待 ${formatDuration(task.waitingSince, now)}` : "旧记录未记等待起点" : task.startedAt ? `已开始 ${formatDuration(task.startedAt, now)}` : `已创建 ${formatDuration(task.createdAt, now)}`}</span>{summary && <span className="task-note" title={summary}>{summary}</span>}</div>
               {(task.dueAt || task.deletedAt) && <div className="task-times">
                 {task.dueAt && <span className={overdue ? "overdue" : ""}>{overdue ? "已超期 · 预计" : "预计"} {formatDateTime(task.dueAt)}</span>}
                 {task.deletedAt && <span>移入回收站 {formatDateTime(task.deletedAt)}</span>}

@@ -16,10 +16,15 @@ export interface Task {
   waitingSince: string | null;
   deletedAt: string | null;
   history: TaskEvent[];
+  goal: TaskGoal | null;
+  progress: ProgressEntry[];
 }
 
+export interface TaskGoal { title: string; target: number; current: number; unit: string }
+export interface ProgressEntry { id: string; at: string; text: string }
+
 export interface TaskEvent { at: string; from: TaskStatus; to: TaskStatus }
-export interface TaskDocument { version: 2; tasks: Task[] }
+export interface TaskDocument { version: 3; tasks: Task[] }
 
 export const STATUS_LABEL: Record<TaskStatus, string> = {
   todo: "待处理",

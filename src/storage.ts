@@ -71,7 +71,7 @@ export class TaskRepository {
   }
   async save(tasks: Task[]): Promise<void> {
     if (this.revision === null) throw new Error("存储尚未就绪，请先重新加载");
-    const document = parseDocument(JSON.stringify({ version: 2, tasks }));
+    const document = parseDocument(JSON.stringify({ version: 3, tasks }));
     this.revision = await this.backend.write(JSON.stringify(document), this.revision);
   }
 }
