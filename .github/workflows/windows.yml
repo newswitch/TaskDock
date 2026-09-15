@@ -1,6 +1,8 @@
 name: Windows checks and package
 on:
   push:
+    branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 permissions:
@@ -15,6 +17,16 @@ jobs:
           node-version: 22
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
+      - name: Set installer version from release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_NAME -notmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+            throw 'Release tags must use vMAJOR.MINOR.PATCH, for example v1.0.1.'
+          }
+          $config = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $config.version = $env:GITHUB_REF_NAME.Substring(1)
+          $config | ConvertTo-Json -Depth 30 | Set-Content src-tauri/tauri.conf.json -Encoding utf8
       - run: npm ci
       - run: npm test
       - run: npm run build
@@ -27,3 +39,35 @@ jobs:
             src-tauri/target/release/bundle/nsis/*-setup.exe
             src-tauri/target/release/taskdock.exe
           if-no-files-found: error
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: TaskDock-windows-x64
+          path: release-assets
+      - name: Publish Windows installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' assets < <(find release-assets -type f \( -name '*-setup.exe' -o -name 'taskdock.exe' \) -print0)
+          if [ "${#assets[@]}" -ne 2 ]; then
+            echo 'Expected one installer and one portable executable.' >&2
+            exit 1
+          fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" --verify-tag --title "TaskDock $RELEASE_TAG" --generate-notes
+          fi

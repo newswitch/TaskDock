@@ -102,7 +102,16 @@ src-tauri/target/release/bundle/nsis/TaskDock_1.0.0_x64-setup.exe
 
 NSIS 安装器使用当前用户安装模式，支持中文和英文。首次打包需要下载 Tauri 的安装器工具。项目未配置代码签名。
 
-GitHub Actions 在 Windows 上执行前端测试、构建、Rust 测试和安装器打包，将成品保存为构建产物；不会自动发布 Release。
+GitHub Actions 在 Windows 上执行前端测试、构建、Rust 测试和安装器打包。普通 main 提交和 PR 生成构建产物；推送 `v主版本.次版本.修订号` 标签会在检查和打包成功后自动创建 GitHub Release，上传安装包和便携 EXE。安装包版本由标签设置，例如 `v1.0.1` 生成 `TaskDock_1.0.1_x64-setup.exe`。标签应使用新的版本号，不要移动已经发布的标签。
+
+代码提交完成后，发布新版本只需：
+
+```powershell
+git tag v1.0.1
+git push --atomic origin main v1.0.1
+```
+
+在仓库 Actions 页面查看进度，完成后在 Releases 页面下载。无需本地打包或另行登录 GitHub CLI，工作流使用仓库自带的临时令牌发布。构建失败不会执行发布步骤；重跑同一版本的工作流会更新对应 Release 的同名附件。
 
 ## 结构
 
