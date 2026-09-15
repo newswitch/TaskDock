@@ -31,7 +31,12 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
   const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
+  const [toast, setToast] = useState<{ text: string; id: number } | null>(null);
+  const toastSequence = useRef(0);
+  const [dataPath, setDataPath] = useState<string | null>(null);
+  function setMessage(text: string) {
+    setToast(text ? { text, id: ++toastSequence.current } : null);
+  }
   const [view, setView] = useState<View>("open");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
@@ -49,7 +54,7 @@ export default function App() {
   const fileInput = useRef<HTMLInputElement>(null);
   const desktop = isTauri();
   const hasRunningClock = tasks.some(task => !task.deletedAt && task.status !== "done");
-  const edgeHide = useEdgeHide(!ready || busy || menuOpen || !!editor || !!backups || !!preview || !!error, setError);
+  const edgeHide = useEdgeHide(!ready || busy || menuOpen || !!editor || !!backups || !!preview || !!error || dataPath !== null, setError);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,6 +94,12 @@ export default function App() {
     return () => { document.removeEventListener("pointerdown", close); document.removeEventListener("keydown", escape); };
   }, [menuOpen]);
 
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 3500);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
   async function perform(action: () => Promise<void>) {
     if (lock.current) return;
     lock.current = true; setBusy(true); setError(""); setMessage("");
@@ -100,7 +111,9 @@ export default function App() {
     let saved = false;
     await perform(async () => {
       await getRepository().save(next);
-      setTasks(next); setReady(true); setNow(new Date()); setMessage(success); saved = true;
+      setTasks(next); setReady(true); setNow(new Date());
+      setMessage(success === "已保存" ? "保存成功" : success);
+      saved = true;
     });
     return saved;
   }
@@ -170,13 +183,14 @@ export default function App() {
   return <div className="shell" style={{ "--panel-opacity": panelOpacity / 100 } as CSSProperties}
     onFocusCapture={edgeHide.onFocusCapture} onBlurCapture={edgeHide.onBlurCapture}>
     <header className="titlebar" onMouseDown={e => { if (desktop && e.button === 0) void getCurrentWindow().startDragging().catch(err => setError(errorText(err))); }}>
-      <div className="brand"><span className="brand-mark" aria-hidden="true">&gt;_</span><div><div className="brand-name">taskdock<span className="brand-cursor" aria-hidden="true" /></div><div className="brand-sub">未解决事项 · {openCount}</div></div></div>
+      <div className="brand"><span className="brand-mark" aria-hidden="true">&gt;_</span><div className="brand-name">taskdock<span className="brand-count" aria-label={`未解决事项 ${openCount} 条`} title={`未解决事项 ${openCount} 条`}>{openCount}</span></div></div>
       <div className="title-actions" onMouseDown={e => e.stopPropagation()}>
         {desktop && <button className="icon-btn pin-btn" aria-label="固定窗口" aria-pressed={edgeHide.pinned}
           title={edgeHide.pinned ? "已固定：靠边保持展开，点击取消固定" : "靠边自动收起，点击固定窗口"}
           disabled={!edgeHide.pinReady || edgeHide.pinBusy} onClick={() => void edgeHide.togglePin()}>
           <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M8 3h8l-1 7 3 3v2H6v-2l3-3-1-7Z" /><path d="M12 15v6" /></svg>
         </button>}
+        <button className="header-add-btn" title="新增事项" aria-label="新增事项" disabled={!ready || busy} onClick={() => edit(null)}>＋ 新增</button>
         <div ref={menuRef}>
           <button className="icon-btn" aria-label="设置" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}>⋯</button>
           {menuOpen && <div className="menu">
@@ -198,7 +212,7 @@ export default function App() {
             <button disabled={busy} onClick={() => void chooseImport()}>导入备份</button>
             <button disabled={busy} onClick={() => void showBackups()}>恢复保存版本</button>
             <button disabled={busy} onClick={() => void reload()}>重新加载数据</button>
-            {desktop && <button disabled={busy} onClick={() => void perform(async () => { setMessage(`数据文件：${await invoke<string>("data_path")}`); setMenuOpen(false); })}>查看数据位置</button>}
+            {desktop && <button disabled={busy} onClick={() => void perform(async () => { setDataPath(await invoke<string>("data_path")); setMenuOpen(false); })}>查看数据位置</button>}
             <span className="menu-version">TaskDock 1.0 · {desktop ? "本机保存" : "浏览器预览"}</span>
           </div>}
         </div>
@@ -213,7 +227,9 @@ export default function App() {
       {view === "open" && <select aria-label="筛选状态" value={filter} onChange={e => setFilter(e.target.value)}><option value="all">全部状态</option><option value="todo">待处理</option><option value="doing">处理中</option><option value="waiting">等待他人</option></select>}
     </div>
     {error && <div className="notice error" role="alert">{error}<button aria-label="关闭错误提示" onClick={() => setError("")}>×</button></div>}
-    {message && <div className="notice" role="status">{message}<button aria-label="关闭提示" onClick={() => setMessage("")}>×</button></div>}
+    <div className="save-toast-region" role="status" aria-live="polite" aria-atomic="true">
+      {toast && <div key={toast.id} className="save-toast"><span aria-hidden="true">✓</span><span>{toast.text}</span></div>}
+    </div>
     <main className="content" aria-busy={loading || busy}>
       {loading ? <div className="empty">正在读取事项…</div> : !ready ? <div className="empty"><p>暂时无法读取事项</p><p className="muted">原始数据已保留，请重试或选择备份恢复。</p><button disabled={busy} className="text-btn" onClick={() => void reload()}>重试读取</button><button disabled={busy} className="text-btn" onClick={() => void showBackups()}>查看保存版本</button><button disabled={busy} className="text-btn" onClick={() => void chooseImport()}>导入备份</button></div> : visibleTasks.length === 0 ?
         <div className="empty"><div className="empty-prompt" aria-hidden="true">{view === "done" ? "[✓]" : view === "trash" ? "[ ]" : ">_"}</div><p>{query || filter !== "all" && view === "open" ? "没有匹配的事项" : view === "open" ? "暂时没有未解决事项" : view === "done" ? "还没有已完成事项" : "回收站是空的"}</p><p className="muted">{view === "open" ? "记下来，忙起来也不会忘。" : view === "trash" ? "移入回收站的事项可以随时恢复。" : "完成的事项会保留时间和状态记录。"}</p></div> :
@@ -221,31 +237,28 @@ export default function App() {
           const overdue = !task.deletedAt && task.status !== "done" && task.dueAt && Date.parse(task.dueAt) < now.getTime();
           return <li key={task.id} className={`task status-${task.status} priority-${task.priority}`}>
             <button className="task-main" disabled={view === "trash" || busy} onClick={() => edit(task)}>
-              <div className="task-title-row"><span className={`dot status-${task.status}`} /><span className="task-title">{task.title}</span><span className="priority-label">{PRIORITY_LABEL[task.priority]}</span></div>
-              <div className="task-meta"><span className={`status-label status-${task.status}`}>{STATUS_LABEL[task.status]}</span><span>·</span><span>{task.status === "done" ? `历时 ${formatDuration(task.startedAt ?? task.createdAt, new Date(task.completedAt!))}` : task.status === "waiting" ? task.waitingSince ? `本次已等待 ${formatDuration(task.waitingSince, now)}` : "旧记录未记等待起点" : task.startedAt ? `已开始 ${formatDuration(task.startedAt, now)}` : `已创建 ${formatDuration(task.createdAt, now)}`}</span></div>
-              <div className="task-times"><span>{task.startedAt ? `开始 ${formatDateTime(task.startedAt)}` : `创建 ${formatDateTime(task.createdAt)} · 未开始`}</span>
+              <div className="task-title-row"><span className="task-title" title={task.title}>{task.title}</span>{task.priority === "high" && <span className="priority-label">{PRIORITY_LABEL[task.priority]}</span>}</div>
+              <div className="task-meta"><span className={`status-label status-${task.status}`}>{STATUS_LABEL[task.status]}</span><span className="task-duration">{task.status === "done" ? `历时 ${formatDuration(task.startedAt ?? task.createdAt, new Date(task.completedAt!))}` : task.status === "waiting" ? task.waitingSince ? `本次已等待 ${formatDuration(task.waitingSince, now)}` : "旧记录未记等待起点" : task.startedAt ? `已开始 ${formatDuration(task.startedAt, now)}` : `已创建 ${formatDuration(task.createdAt, now)}`}</span>{task.note && <span className="task-note" title={task.note}>{task.note}</span>}</div>
+              {(task.dueAt || task.deletedAt) && <div className="task-times">
                 {task.dueAt && <span className={overdue ? "overdue" : ""}>{overdue ? "已超期 · 预计" : "预计"} {formatDateTime(task.dueAt)}</span>}
-                {task.completedAt && <span>完成 {formatDateTime(task.completedAt)}</span>}
                 {task.deletedAt && <span>移入回收站 {formatDateTime(task.deletedAt)}</span>}
-              </div>
-              {task.note && <p className="task-note">{task.note}</p>}
+              </div>}
             </button>
             <div className="task-actions">
-              {view === "trash" ? <button disabled={busy} onClick={() => void commit(tasks.map(t => t.id === task.id ? { ...t, deletedAt: null, updatedAt: nowIso() } : t), "事项已恢复")}>恢复事项</button> : task.status === "done" ? <><button disabled={busy} onClick={() => void setStatus(task, "todo")}>重新打开</button><button disabled={busy} onClick={() => void trash(task)}>移入回收站</button></> : <>
-                {(["todo", "doing", "waiting"] as const).filter(status => task.status !== status).map(status => <button key={status} disabled={busy} onClick={() => void setStatus(task, status)}>{STATUS_LABEL[status]}</button>)}
-                <button className="done-btn" disabled={busy} onClick={() => void setStatus(task, "done")}>完成</button></>}
+              {view === "trash" ? <button disabled={busy} onClick={() => void commit(tasks.map(t => t.id === task.id ? { ...t, deletedAt: null, updatedAt: nowIso() } : t), "事项已恢复")}>恢复事项</button> : task.status === "done" ? <button disabled={busy} onClick={() => void setStatus(task, "todo")}>重开</button> :
+                <button disabled={busy} title="将此事项标记为已完成" onClick={() => void setStatus(task, "done")}>完成</button>}
             </div>
           </li>;
         })}</ul>}
       {visibleTasks.length > limit && <button className="load-more" onClick={() => setLimit(limit + 50)}>加载更多（还有 {visibleTasks.length - limit} 条）</button>}
     </main>
-    <footer className="footer"><button className="add-btn" disabled={!ready || busy} onClick={() => edit(null)}><span aria-hidden="true">&gt;</span> 新增事项<span className="add-symbol" aria-hidden="true">＋</span></button><div className="footer-status"><span className={ready ? "storage-ready" : ""}><span aria-hidden="true">●</span> {loading ? "正在读取" : !ready ? "等待恢复" : desktop ? "本机保存" : "浏览器预览"}</span><span>把事情留在视线里</span></div></footer>
     {desktop && (["North", "South", "East", "West", "NorthEast", "NorthWest", "SouthEast", "SouthWest"] as const).map(direction => <div aria-hidden="true" key={direction} className={`resize-handle resize-${direction}`} onPointerDown={event => { if (event.button === 0) void getCurrentWindow().startResizeDragging(direction).catch(e => setError(errorText(e))); }} />)}
     <input ref={fileInput} type="file" accept=".json,application/json" hidden onChange={event => {
       const file = event.target.files?.[0]; event.target.value = "";
       if (file) void perform(async () => { if (file.size > 50 * 1024 * 1024) throw new Error("文件不能超过 50 MB"); inspectImport(await file.text(), file.name); });
     }} />
     {editor && <TaskEditor task={editor.task} busy={busy} error={error} onClose={() => setEditor(null)} onDelete={trash} onSave={task => commit(editor.task ? tasks.map(t => t.id === task.id ? task : t) : [task, ...tasks])} />}
+    {dataPath !== null && <Dialog title="数据位置" busy={busy} onClose={() => setDataPath(null)}><div className="panel-body data-path">{dataPath}</div></Dialog>}
     {backups && <Dialog title="恢复保存版本" busy={busy} onClose={() => setBackups(null)}><div className="panel-body">
       <p className="muted">{desktop ? "保留最近 20 个保存前的版本。" : "浏览器预览保留上一次保存。"}选择后可先查看数量，再决定恢复。</p>
       {error && <p className="error" role="alert">{error}</p>}

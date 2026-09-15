@@ -35,6 +35,8 @@ test("hide parks before completion, reveal starts tucked, and idle keeps no anim
   assert.equal(root.style.visibility, "");
   assert.equal(root.style.willChange, undefined);
   assert.ok(animations.every(animation => animation.cancelled));
+  assert.ok(animations.every(animation => animation.frames.every(frame => !("opacity" in frame))),
+    "window transitions must preserve the user's background opacity and text contrast");
   assert.deepEqual(completed, [1, 2]);
 });
 

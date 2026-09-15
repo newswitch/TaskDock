@@ -7,7 +7,7 @@ const tucked: Record<Edge, string> = {
   right: "translate3d(100%, 0, 0)", left: "translate3d(-100%, 0, 0)",
   top: "translate3d(0, -100%, 0)", bottom: "translate3d(0, 100%, 0)",
 };
-const rest = { transform: "translate3d(0, 0, 0)", opacity: "1" };
+const rest = { transform: "translate3d(0, 0, 0)" };
 
 // Keep this independent of React so an animation never re-renders the task list.
 export function createEdgeMotion(root: HTMLElement, complete: (id: number) => void,
@@ -43,8 +43,8 @@ export function createEdgeMotion(root: HTMLElement, complete: (id: number) => vo
       }
       // Read the in-flight frame before cancellation for a continuous reversal.
       const current = animation ? getComputedStyle(root) : undefined;
-      const start = current ? { transform: current.transform, opacity: current.opacity }
-        : parked ? { transform: tucked[request.edge], opacity: "0.35" } : rest;
+      const start = current ? { transform: current.transform }
+        : parked ? { transform: tucked[request.edge] } : rest;
       clean();
       const hidden = request.phase === "hide";
       if (reducedMotion() || typeof root.animate !== "function") {
@@ -53,10 +53,10 @@ export function createEdgeMotion(root: HTMLElement, complete: (id: number) => vo
         return;
       }
       root.style.visibility = "";
-      root.style.willChange = "transform, opacity";
+      root.style.willChange = "transform";
       root.dataset.edgeMotion = request.phase;
       root.dataset.edge = request.edge;
-      const finish = hidden ? { transform: tucked[request.edge], opacity: "0.35" } : rest;
+      const finish = hidden ? { transform: tucked[request.edge] } : rest;
       try {
         const running = root.animate([start, finish], {
           duration: hidden ? HIDE_MS : SHOW_MS,
