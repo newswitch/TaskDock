@@ -24,7 +24,7 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); ou
 select option { background: #1b2420; color: #e5ebe7; }
 textarea { resize: vertical; }
 ::selection { color: #0d1912; background: #93dbb4; }
-.shell { position: relative; height: calc(100% - 16px); margin: 8px; display: flex; flex-direction: column; overflow: hidden; border-radius: 9px; border: 1px solid rgba(215, 232, 222, .23); background: rgba(13, 18, 17, var(--panel-opacity)); box-shadow: 0 5px 18px #00000030, inset 0 1px 0 #ffffff06; }
+.shell { position: relative; height: calc(100% - 16px); margin: 8px; display: flex; flex-direction: column; overflow: hidden; border-radius: 9px; border: 1px solid rgba(215, 232, 222, .23); background: rgba(13, 18, 17, var(--panel-opacity)); box-shadow: none; }
 /* A single green edge flash, composited only during a window transition. */
 [data-edge-motion] .shell::after { content: ""; position: absolute; inset: 0; z-index: 20; pointer-events: none; border: 1px solid #a6e6c3; border-radius: inherit; opacity: 0; }
 [data-edge-motion="show"] .shell::after { animation: edge-arrive 260ms ease-out both; }
