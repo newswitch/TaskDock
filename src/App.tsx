@@ -5,11 +5,12 @@ import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import type { Task, TaskStatus } from "./types";
 import { PRIORITY_LABEL, STATUS_LABEL } from "./types";
 import { getRepository, type Backup } from "./storage";
-import { changeStatus, mergeTasks, parseDocument, sortTasks, taskSummary } from "./tasks";
+import { changeStatus, mergeTasks, parseDocument, reorderTasks, sortTasks, taskSummary } from "./tasks";
 import { formatDateTime, formatDuration, nowIso } from "./time";
 import TaskEditor from "./TaskEditor";
 import Dialog from "./Dialog";
 import { useEdgeHide } from "./useEdgeHide";
+import { useTaskReorder } from "./useTaskReorder";
 import "./App.css";
 
 type View = "open" | "done" | "trash";
@@ -54,7 +55,12 @@ export default function App() {
   const fileInput = useRef<HTMLInputElement>(null);
   const desktop = isTauri();
   const hasRunningClock = tasks.some(task => !task.deletedAt && task.status !== "done");
-  const edgeHide = useEdgeHide(!ready || busy || menuOpen || !!editor || !!backups || !!preview || !!error || dataPath !== null, setError);
+  const reorder = useTaskReorder(ready && !busy && view === "open" && !editor && !menuOpen && !preview && !backups && !dataPath,
+    `${view}:${query}:${filter}:${limit}`, ({ source, target, after }) => {
+      const next = reorderTasks(tasks, source, target, after, nowIso());
+      if (next !== tasks) void commit(next, "顺序已保存");
+    });
+  const edgeHide = useEdgeHide(!ready || busy || !!reorder.drag || menuOpen || !!editor || !!backups || !!preview || !!error || dataPath !== null, setError);
 
   useEffect(() => {
     let cancelled = false;
@@ -230,14 +236,27 @@ export default function App() {
     <div className="save-toast-region" role="status" aria-live="polite" aria-atomic="true">
       {toast && <div key={toast.id} className="save-toast"><span aria-hidden="true">✓</span><span>{toast.text}</span></div>}
     </div>
-    <main className="content" aria-busy={loading || busy}>
+    <main ref={reorder.contentRef} className={`content${reorder.drag ? " is-reordering" : ""}`} aria-busy={loading || busy}>
       {loading ? <div className="empty">正在读取事项…</div> : !ready ? <div className="empty"><p>暂时无法读取事项</p><p className="muted">原始数据已保留，请重试或选择备份恢复。</p><button disabled={busy} className="text-btn" onClick={() => void reload()}>重试读取</button><button disabled={busy} className="text-btn" onClick={() => void showBackups()}>查看保存版本</button><button disabled={busy} className="text-btn" onClick={() => void chooseImport()}>导入备份</button></div> : visibleTasks.length === 0 ?
         <div className="empty"><div className="empty-prompt" aria-hidden="true">{view === "done" ? "[✓]" : view === "trash" ? "[ ]" : ">_"}</div><p>{query || filter !== "all" && view === "open" ? "没有匹配的事项" : view === "open" ? "暂时没有未解决事项" : view === "done" ? "还没有已完成事项" : "回收站是空的"}</p><p className="muted">{view === "open" ? "记下来，忙起来也不会忘。" : view === "trash" ? "移入回收站的事项可以随时恢复。" : "完成的事项会保留时间和状态记录。"}</p></div> :
         <ul className="task-list">{visibleTasks.slice(0, limit).map(task => {
           const overdue = !task.deletedAt && task.status !== "done" && task.dueAt && Date.parse(task.dueAt) < now.getTime();
           const summary = taskSummary(task);
-          return <li key={task.id} className={`task status-${task.status} priority-${task.priority}`}>
-            <button className="task-main" disabled={view === "trash" || busy} onClick={() => edit(task)}>
+          const moving = reorder.drag?.source === task.id;
+          const target = reorder.drag?.target === task.id && !moving;
+          return <li key={task.id} data-task-id={task.id} className={`task status-${task.status} priority-${task.priority}${moving ? " task-dragging" : ""}${target ? reorder.drag?.after ? " drop-after" : " drop-before" : ""}`}>
+            <button className={`task-main${view === "open" ? " task-sortable" : ""}`} disabled={view === "trash" || busy}
+              title={view === "open" ? "点击查看，长按拖动排序" : undefined}
+              onPointerDown={event => reorder.start(event, task.id)}
+              onContextMenu={event => { if (view === "open") event.preventDefault(); }}
+              onKeyDown={event => {
+                if (view !== "open" || !event.altKey || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
+                event.preventDefault();
+                const index = visibleTasks.findIndex(item => item.id === task.id);
+                const target = visibleTasks[index + (event.key === "ArrowUp" ? -1 : 1)];
+                if (target) void commit(reorderTasks(tasks, task.id, target.id, event.key === "ArrowDown", nowIso()), "顺序已保存");
+              }}
+              onClick={event => { if (reorder.consumeClick()) { event.preventDefault(); return; } edit(task); }}>
               <div className="task-title-row"><span className="task-title" title={task.title}>{task.title}</span>{task.priority === "high" && <span className="priority-label">{PRIORITY_LABEL[task.priority]}</span>}</div>
               <div className="task-meta"><span className={`status-label status-${task.status}`}>{STATUS_LABEL[task.status]}</span><span className="task-duration">{task.status === "done" ? `历时 ${formatDuration(task.startedAt ?? task.createdAt, new Date(task.completedAt!))}` : task.status === "waiting" ? task.waitingSince ? `本次已等待 ${formatDuration(task.waitingSince, now)}` : "旧记录未记等待起点" : task.startedAt ? `已开始 ${formatDuration(task.startedAt, now)}` : `已创建 ${formatDuration(task.createdAt, now)}`}</span>{summary && <span className="task-note" title={summary}>{summary}</span>}</div>
               {(task.dueAt || task.deletedAt) && <div className="task-times">

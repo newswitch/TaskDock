@@ -32,6 +32,7 @@ export function parseDocument(raw: string): TaskDocument {
       if (!statuses.includes(value.status as string) || !priorities.includes(value.priority as string)) throw new Error("状态或优先级无效");
       if (typeof value.note !== "string" || value.note.length > 20_000) throw new Error("备注无效或过长");
       const createdAt = date(value.createdAt)!;
+      if (value.sortOrder !== undefined && (!Number.isSafeInteger(value.sortOrder) || (value.sortOrder as number) < 0)) throw new Error("排序位置无效");
       const status = value.status as TaskStatus;
       const completedAt = date(value.completedAt, true);
       if (status === "done" && !completedAt) throw new Error("已完成事项缺少完成时间");
@@ -71,6 +72,7 @@ export function parseDocument(raw: string): TaskDocument {
         updatedAt: date(value.updatedAt ?? completedAt ?? createdAt)!,
         waitingSince: status === "waiting" ? date(value.waitingSince, true) : null,
         deletedAt: date(value.deletedAt, true), history, goal, progress,
+        ...(value.sortOrder === undefined ? {} : { sortOrder: value.sortOrder as number }),
       };
     } catch (error) { throw new Error(`第 ${index + 1} 条事项：${(error as Error).message}`); }
   });
@@ -104,7 +106,19 @@ export function sortTasks(tasks: Task[], completed = false): Task[] {
   const rank = { high: 0, medium: 1, low: 2 };
   return [...tasks].sort((a, b) => completed
     ? (b.completedAt ?? b.deletedAt ?? b.updatedAt).localeCompare(a.completedAt ?? a.deletedAt ?? a.updatedAt)
-    : rank[a.priority] - rank[b.priority] || a.createdAt.localeCompare(b.createdAt));
+    : (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER)
+      || rank[a.priority] - rank[b.priority] || a.createdAt.localeCompare(b.createdAt));
+}
+
+export function reorderTasks(tasks: Task[], sourceId: string, targetId: string, after: boolean, at: string): Task[] {
+  const ordered = sortTasks(tasks.filter(task => !task.deletedAt && task.status !== "done"));
+  const source = ordered.find(task => task.id === sourceId);
+  if (!source || sourceId === targetId || !ordered.some(task => task.id === targetId)) return tasks;
+  const next = ordered.filter(task => task.id !== sourceId);
+  next.splice(next.findIndex(task => task.id === targetId) + (after ? 1 : 0), 0, source);
+  if (next.every((task, index) => task.id === ordered[index].id)) return tasks;
+  const positions = new Map(next.map((task, index) => [task.id, index]));
+  return tasks.map(task => positions.has(task.id) ? { ...task, sortOrder: positions.get(task.id)!, updatedAt: at } : task);
 }
 
 export function validateTimes(startedAt: string | null, dueAt: string | null, now: string, completedAt: string | null = null): string | null {

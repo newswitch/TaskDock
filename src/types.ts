@@ -18,6 +18,7 @@ export interface Task {
   history: TaskEvent[];
   goal: TaskGoal | null;
   progress: ProgressEntry[];
+  sortOrder?: number;
 }
 
 export interface TaskGoal { title: string; target: number; current: number; unit: string }
